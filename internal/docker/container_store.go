@@ -7,8 +7,9 @@ import (
 	"sync/atomic"
 
 	"github.com/puzpuzpuz/xsync/v3"
-	lop "github.com/samber/lo/parallel"
+	"github.com/samber/lo"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/semaphore"
 )
 
 type ContainerStore struct {
@@ -42,7 +43,10 @@ func NewContainerStore(ctx context.Context, client Client) *ContainerStore {
 	return s
 }
 
-var ErrContainerNotFound = errors.New("container not found")
+var (
+	ErrContainerNotFound = errors.New("container not found")
+	maxFetchParallelism  = int64(30)
+)
 
 func (s *ContainerStore) checkConnectivity() error {
 	if s.connected.CompareAndSwap(false, true) {
@@ -59,10 +63,35 @@ func (s *ContainerStore) checkConnectivity() error {
 			return err
 		} else {
 			s.containers.Clear()
-			lop.ForEach(containers, func(c Container, _ int) {
-				container, _ := s.client.FindContainer(c.ID)
-				s.containers.Store(c.ID, &container)
+
+			for _, c := range containers {
+				s.containers.Store(c.ID, &c)
+			}
+
+			running := lo.Filter(containers, func(item Container, index int) bool {
+				return item.State == "running"
 			})
+
+			sem := semaphore.NewWeighted(maxFetchParallelism)
+
+			for i, c := range running {
+				if err := sem.Acquire(s.ctx, 1); err != nil {
+					log.Errorf("failed to acquire semaphore: %v", err)
+					break
+				}
+				go func(c Container, i int) {
+					defer sem.Release(1)
+					if container, err := s.client.FindContainer(c.ID); err == nil {
+						s.containers.Store(c.ID, &container)
+					}
+				}(c, i)
+			}
+
+			if err := sem.Acquire(s.ctx, maxFetchParallelism); err != nil {
+				log.Errorf("failed to acquire semaphore: %v", err)
+			}
+
+			log.Debugf("finished initializing container store with %d containers", len(containers))
 		}
 	}
 
@@ -85,19 +114,15 @@ func (s *ContainerStore) ListContainers() ([]Container, error) {
 }
 
 func (s *ContainerStore) FindContainer(id string) (Container, error) {
-	list, err := s.ListContainers()
-	if err != nil {
-		return Container{}, err
-	}
+	s.wg.Wait()
+	container, ok := s.containers.Load(id)
 
-	for _, c := range list {
-		if c.ID == id {
-			return c, nil
-		}
+	if ok {
+		return *container, nil
+	} else {
+		log.Warnf("container %s not found in store", id)
+		return Container{}, ErrContainerNotFound
 	}
-
-	log.Warnf("container %s not found in store", id)
-	return Container{}, ErrContainerNotFound
 }
 
 func (s *ContainerStore) Client() Client {
@@ -150,15 +175,24 @@ func (s *ContainerStore) init() {
 			switch event.Name {
 			case "start":
 				if container, err := s.client.FindContainer(event.ActorID); err == nil {
-					log.Debugf("container %s started", container.ID)
-					s.containers.Store(container.ID, &container)
-					s.newContainerSubscribers.Range(func(c context.Context, containers chan<- Container) bool {
-						select {
-						case containers <- container:
-						case <-c.Done():
-						}
-						return true
+					list, _ := s.client.ListContainers()
+
+					// make sure the container is in the list of containers when using filter
+					valid := lo.ContainsBy(list, func(item Container) bool {
+						return item.ID == container.ID
 					})
+
+					if valid {
+						log.Debugf("container %s started", container.ID)
+						s.containers.Store(container.ID, &container)
+						s.newContainerSubscribers.Range(func(c context.Context, containers chan<- Container) bool {
+							select {
+							case containers <- container:
+							case <-c.Done():
+							}
+							return true
+						})
+					}
 				}
 			case "destroy":
 				log.Debugf("container %s destroyed", event.ActorID)

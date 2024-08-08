@@ -51,14 +51,29 @@ func main() {
 			if err != nil {
 				log.Fatalf("failed to listen: %v", err)
 			}
-			tempFile, err := os.CreateTemp("/", "agent-*.addr")
+			tempFile, err := os.CreateTemp("./", "agent-*.addr")
 			if err != nil {
 				log.Fatalf("failed to create temp file: %v", err)
 			}
-			defer os.Remove(tempFile.Name())
 			io.WriteString(tempFile, listener.Addr().String())
 			go cli.StartEvent(args, "", client, "agent")
-			agent.RunServer(client, certs, listener)
+			server := agent.NewServer(client, certs, args.Version())
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			go func() {
+				log.Infof("Dozzle agent version %s", args.Version())
+				log.Infof("Agent listening on %s", listener.Addr().String())
+				if err := server.Serve(listener); err != nil {
+					log.Fatalf("failed to serve: %v", err)
+				}
+			}()
+			<-ctx.Done()
+			stop()
+			log.Info("Shutting down agent")
+			server.Stop()
+			log.Debugf("deleting %s", tempFile.Name())
+			os.Remove(tempFile.Name())
+
 		case *cli.HealthcheckCmd:
 			go cli.StartEvent(args, "", nil, "healthcheck")
 			files, err := os.ReadDir(".")
@@ -120,12 +135,15 @@ func main() {
 
 	var multiHostService *docker_support.MultiHostService
 	if args.Mode == "server" {
-		multiHostService = cli.CreateMultiHostService(certs, args)
+		var localClient docker.Client
+		localClient, multiHostService = cli.CreateMultiHostService(certs, args)
 		if multiHostService.TotalClients() == 0 {
 			log.Fatal("Could not connect to any Docker Engines")
 		} else {
 			log.Infof("Connected to %d Docker Engine(s)", multiHostService.TotalClients())
 		}
+		go cli.StartEvent(args, "server", localClient, "")
+
 	} else if args.Mode == "swarm" {
 		localClient, err := docker.NewLocalClient(args.Filter, args.Hostname)
 		if err != nil {
@@ -135,13 +153,21 @@ func main() {
 		if err != nil {
 			log.Fatalf("Could not read certificates: %v", err)
 		}
-		multiHostService = docker_support.NewSwarmService(localClient, certs)
+		manager := docker_support.NewSwarmClientManager(localClient, certs)
+		multiHostService = docker_support.NewMultiHostService(manager)
 		log.Infof("Starting in Swarm mode")
 		listener, err := net.Listen("tcp", ":7007")
 		if err != nil {
 			log.Fatalf("failed to listen: %v", err)
 		}
-		go agent.RunServer(localClient, certs, listener)
+		server := agent.NewServer(localClient, certs, args.Version())
+		go cli.StartEvent(args, "swarm", localClient, "")
+		go func() {
+			log.Infof("Agent listening on %s", listener.Addr().String())
+			if err := server.Serve(listener); err != nil {
+				log.Fatalf("failed to serve: %v", err)
+			}
+		}()
 	} else {
 		log.Fatalf("Invalid mode %s", args.Mode)
 	}
@@ -159,7 +185,7 @@ func main() {
 	<-ctx.Done()
 	stop()
 	log.Info("shutting down gracefully, press Ctrl+C again to force")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal(err)
@@ -173,9 +199,11 @@ func createServer(args cli.Args, multiHostService *docker_support.MultiHostServi
 	var provider web.AuthProvider = web.NONE
 	var authorizer web.Authorizer
 	if args.AuthProvider == "forward-proxy" {
+		log.Debug("Using forward proxy authentication")
 		provider = web.FORWARD_PROXY
 		authorizer = auth.NewForwardProxyAuth(args.AuthHeaderUser, args.AuthHeaderEmail, args.AuthHeaderName)
 	} else if args.AuthProvider == "simple" {
+		log.Debug("Using simple authentication")
 		provider = web.SIMPLE
 
 		path, err := filepath.Abs("./data/users.yml")
@@ -186,11 +214,15 @@ func createServer(args cli.Args, multiHostService *docker_support.MultiHostServi
 			log.Fatalf("Could not find users.yml file at %s", path)
 		}
 
-		users, err := auth.ReadUsersFromFile(path)
+		log.Debugf("Reading users from %s", path)
+
+		db, err := auth.ReadUsersFromFile(path)
 		if err != nil {
 			log.Fatalf("Could not read users.yml file at %s: %s", path, err)
 		}
-		authorizer = auth.NewSimpleAuth(users)
+
+		log.Debugf("Read %d users", len(db.Users))
+		authorizer = auth.NewSimpleAuth(db)
 	}
 
 	config := web.Config{

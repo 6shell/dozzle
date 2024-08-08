@@ -23,9 +23,9 @@ import (
 )
 
 type Client struct {
-	client pb.AgentServiceClient
-	host   docker.Host
-	conn   *grpc.ClientConn
+	client   pb.AgentServiceClient
+	conn     *grpc.ClientConn
+	endpoint string
 }
 
 func NewClient(endpoint string, certificates tls.Certificate, opts ...grpc.DialOption) (*Client, error) {
@@ -51,23 +51,11 @@ func NewClient(endpoint string, certificates tls.Certificate, opts ...grpc.DialO
 	}
 
 	client := pb.NewAgentServiceClient(conn)
-	info, err := client.HostInfo(context.Background(), &pb.HostInfoRequest{})
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to get host info: %w", err)
-	}
 
 	return &Client{
-		client: client,
-		conn:   conn,
-
-		host: docker.Host{
-			ID:       info.Host.Id,
-			Name:     info.Host.Name,
-			NCPU:     int(info.Host.CpuCores),
-			MemTotal: int64(info.Host.Memory),
-			Endpoint: endpoint,
-		},
+		client:   client,
+		conn:     conn,
+		endpoint: endpoint,
 	}, nil
 }
 
@@ -252,22 +240,18 @@ func (c *Client) StreamNewContainers(ctx context.Context, containers chan<- dock
 			return rpcErrToErr(err)
 		}
 
-		started := resp.Container.Started.AsTime()
-
 		containers <- docker.Container{
 			ID:        resp.Container.Id,
 			Name:      resp.Container.Name,
 			Image:     resp.Container.Image,
 			Labels:    resp.Container.Labels,
 			Group:     resp.Container.Group,
-			ImageID:   resp.Container.ImageId,
 			Created:   resp.Container.Created.AsTime(),
 			State:     resp.Container.State,
-			Status:    resp.Container.Status,
 			Health:    resp.Container.Health,
 			Host:      resp.Container.Host,
 			Tty:       resp.Container.Tty,
-			StartedAt: &started,
+			StartedAt: resp.Container.Started.AsTime(),
 			Command:   resp.Container.Command,
 		}
 	}
@@ -290,28 +274,20 @@ func (c *Client) FindContainer(containerID string) (docker.Container, error) {
 		})
 	}
 
-	var startedAt *time.Time
-	if response.Container.Started != nil {
-		started := response.Container.Started.AsTime()
-		startedAt = &started
-	}
-
 	return docker.Container{
 		ID:        response.Container.Id,
 		Name:      response.Container.Name,
 		Image:     response.Container.Image,
 		Labels:    response.Container.Labels,
 		Group:     response.Container.Group,
-		ImageID:   response.Container.ImageId,
 		Created:   response.Container.Created.AsTime(),
 		State:     response.Container.State,
-		Status:    response.Container.Status,
 		Health:    response.Container.Health,
 		Host:      response.Container.Host,
 		Tty:       response.Container.Tty,
 		Command:   response.Container.Command,
+		StartedAt: response.Container.Started.AsTime(),
 		Stats:     utils.RingBufferFrom(300, stats),
-		StartedAt: startedAt,
 	}, nil
 }
 
@@ -333,36 +309,65 @@ func (c *Client) ListContainers() ([]docker.Container, error) {
 			})
 		}
 
-		var startedAt *time.Time
-		if container.Started != nil {
-			started := container.Started.AsTime()
-			startedAt = &started
-		}
-
 		containers = append(containers, docker.Container{
 			ID:        container.Id,
 			Name:      container.Name,
 			Image:     container.Image,
 			Labels:    container.Labels,
 			Group:     container.Group,
-			ImageID:   container.ImageId,
 			Created:   container.Created.AsTime(),
 			State:     container.State,
-			Status:    container.Status,
 			Health:    container.Health,
 			Host:      container.Host,
 			Tty:       container.Tty,
-			Stats:     utils.RingBufferFrom(300, stats),
 			Command:   container.Command,
-			StartedAt: startedAt,
+			StartedAt: container.Started.AsTime(),
+			Stats:     utils.RingBufferFrom(300, stats),
 		})
 	}
 
 	return containers, nil
 }
 
-func (c *Client) Host() docker.Host {
-	return c.host
+func (c *Client) Host() (docker.Host, error) {
+	info, err := c.client.HostInfo(context.Background(), &pb.HostInfoRequest{})
+	if err != nil {
+		return docker.Host{
+			Endpoint:  c.endpoint,
+			Type:      "agent",
+			Available: false,
+		}, err
+	}
+
+	return docker.Host{
+		ID:            info.Host.Id,
+		Name:          info.Host.Name,
+		NCPU:          int(info.Host.CpuCores),
+		MemTotal:      int64(info.Host.Memory),
+		Endpoint:      c.endpoint,
+		Type:          "agent",
+		DockerVersion: info.Host.DockerVersion,
+		AgentVersion:  info.Host.AgentVersion,
+	}, nil
+}
+
+func (c *Client) ContainerAction(containerId string, action docker.ContainerAction) error {
+	var containerAction pb.ContainerAction
+	switch action {
+	case docker.Start:
+		containerAction = pb.ContainerAction_Start
+
+	case docker.Stop:
+		containerAction = pb.ContainerAction_Stop
+
+	case docker.Restart:
+		containerAction = pb.ContainerAction_Restart
+
+	}
+
+	_, err := c.client.ContainerAction(context.Background(), &pb.ContainerActionRequest{ContainerId: containerId, Action: containerAction})
+
+	return err
 }
 
 func (c *Client) Close() error {

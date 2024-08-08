@@ -3,14 +3,12 @@ import { Host } from "@/stores/hosts";
 
 const text = document.querySelector("script#config__json")?.textContent || "{}";
 
-type HostWithoutAvailable = Omit<Host, "available">;
-
 export interface Config {
   version: string;
   base: string;
   maxLogs: number;
   hostname: string;
-  hosts: HostWithoutAvailable[];
+  hosts: Host[];
   authProvider: "simple" | "none" | "forward-proxy";
   enableActions: boolean;
   user?: {
@@ -37,8 +35,6 @@ const config: Config = {
   hosts: [],
   ...pageConfig,
 };
-
-config.version = config.version.replace(/^v/, "");
 
 export default Object.freeze(config);
 

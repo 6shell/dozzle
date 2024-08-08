@@ -3,9 +3,10 @@ import { Ref, UnwrapNestedRefs } from "vue";
 import type { ContainerHealth, ContainerJson, ContainerStat } from "@/types/Container";
 import { Container } from "@/models/Container";
 import i18n from "@/modules/i18n";
+import { Host } from "./hosts";
 
 const { showToast, removeToast } = useToast();
-const { markHostAvailable } = useHosts();
+const { updateHost } = useHosts();
 // @ts-ignore
 const { t } = i18n.global;
 
@@ -74,9 +75,9 @@ export const useContainerStore = defineStore("container", () => {
       }
     });
 
-    es.addEventListener("host-unavailable", (e) => {
-      const hostId = (e as MessageEvent).data;
-      markHostAvailable(hostId, false);
+    es.addEventListener("update-host", (e) => {
+      const host = JSON.parse((e as MessageEvent).data) as Host;
+      updateHost(host);
     });
 
     es.addEventListener("container-health", (e) => {
@@ -121,7 +122,6 @@ export const useContainerStore = defineStore("container", () => {
 
     existingContainers.forEach((c) => {
       const existing = allContainersById.value[c.id];
-      existing.status = c.status;
       existing.state = c.state;
       existing.health = c.health;
     });
@@ -137,7 +137,6 @@ export const useContainerStore = defineStore("container", () => {
           c.command,
           c.host,
           c.labels,
-          c.status,
           c.state,
           c.stats,
           c.group,

@@ -11,21 +11,29 @@ func StartEvent(args Args, mode string, client docker.Client, subCommand string)
 		return
 	}
 	event := analytics.BeaconEvent{
-		Name:          "start",
-		Version:       args.Version(),
-		Mode:          mode,
-		RemoteAgents:  len(args.RemoteAgent),
-		RemoteClients: len(args.RemoteHost),
-		SubCommand:    subCommand,
+		Name:             "start",
+		Version:          args.Version(),
+		Mode:             mode,
+		RemoteAgents:     len(args.RemoteAgent),
+		RemoteClients:    len(args.RemoteHost),
+		SubCommand:       subCommand,
+		HasActions:       args.EnableActions,
+		HasCustomAddress: args.Addr != ":8080",
+		HasCustomBase:    args.Base != "/",
+		HasHostname:      args.Hostname != "",
+		FilterLength:     len(args.Filter),
 	}
 
 	if client != nil {
-		event.ServerID = client.SystemInfo().ID
-		event.ServerVersion = client.SystemInfo().ServerVersion
+		host := client.Host()
+		event.ServerID = host.ID
+		event.ServerVersion = host.DockerVersion
+		event.IsSwarmMode = client.SystemInfo().Swarm.NodeID != ""
 	} else {
 		event.ServerID = "n/a"
 	}
 
+	log.Tracef("sending beacon event: %+v", event)
 	if err := analytics.SendBeacon(event); err != nil {
 		log.Debug(err)
 	}

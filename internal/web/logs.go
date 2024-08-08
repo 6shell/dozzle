@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/amir20/dozzle/internal/docker"
+	"github.com/amir20/dozzle/internal/utils"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/dustin/go-humanize"
 	"github.com/go-chi/chi/v5"
@@ -107,8 +108,14 @@ func (h *handler) fetchLogsBetweenDates(w http.ResponseWriter, r *http.Request) 
 		log.Errorf("error while streaming logs %v", err.Error())
 	}
 
-	encoder := json.NewEncoder(w)
+	buffer := utils.NewRingBuffer[*docker.LogEvent](500)
+
 	for event := range events {
+		buffer.Push(event)
+	}
+
+	encoder := json.NewEncoder(w)
+	for _, event := range buffer.Data() {
 		if err := encoder.Encode(event); err != nil {
 			log.Errorf("json encoding error while streaming %v", err.Error())
 		}
@@ -199,16 +206,12 @@ func streamLogsForContainers(w http.ResponseWriter, r *http.Request, multiHostCl
 	}
 
 	streamLogs := func(container docker.Container) {
-		start := time.Time{}
-		if container.StartedAt != nil {
-			start = *container.StartedAt
-		}
 		containerService, err := multiHostClient.FindContainer(container.Host, container.ID)
 		if err != nil {
 			log.Errorf("error while finding container %v", err.Error())
 			return
 		}
-		err = containerService.StreamLogs(r.Context(), start, stdTypes, logs)
+		err = containerService.StreamLogs(r.Context(), container.StartedAt, stdTypes, logs)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				log.WithError(err).Debugf("stream closed for container %v", container.Name)

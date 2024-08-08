@@ -10,7 +10,7 @@ message Container {
   string id = 1;
   string name = 2;
   string image = 3;
-  string status = 4;
+  string status = 4; // deprecated
   string state = 5;
   string ImageId = 6;
   google.protobuf.Timestamp created = 7;
@@ -62,4 +62,12 @@ message Host {
   string osType = 8;
   uint32 cpuCores = 9;
   uint64 memory = 10;
+  string agentVersion = 11;
+  string dockerVersion = 12;
+}
+
+enum ContainerAction {
+  Start = 0;
+  Stop = 1;
+  Restart = 2;
 }

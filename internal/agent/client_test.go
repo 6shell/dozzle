@@ -94,41 +94,41 @@ func init() {
 	client = &MockedClient{}
 	client.On("ListContainers").Return([]docker.Container{
 		{
-			ID:   "123456",
-			Name: "test",
-			Host: "localhost",
+			ID:    "123456",
+			Name:  "test",
+			Host:  "localhost",
+			State: "running",
 		},
 	}, nil)
+
 	client.On("Host").Return(docker.Host{
 		ID:       "localhost",
 		Endpoint: "local",
 		Name:     "local",
 	})
+
 	client.On("ContainerEvents", mock.Anything, mock.AnythingOfType("chan<- docker.ContainerEvent")).Return(nil).Run(func(args mock.Arguments) {
 		time.Sleep(5 * time.Second)
 	})
 
 	client.On("FindContainer", "123456").Return(docker.Container{
-		ID:        "123456",
-		Name:      "test",
-		Host:      "localhost",
-		Image:     "test",
-		ImageID:   "test",
-		StartedAt: &time.Time{},
-		State:     "running",
-		Status:    "running",
-		Health:    "healthy",
-		Group:     "test",
-		Command:   "test",
-		Created:   time.Time{},
-		Tty:       true,
+		ID:      "123456",
+		Name:    "test",
+		Host:    "localhost",
+		Image:   "test",
+		State:   "running",
+		Health:  "healthy",
+		Group:   "test",
+		Command: "test",
+		Tty:     true,
 		Labels: map[string]string{
 			"test": "test",
 		},
 		Stats: utils.NewRingBuffer[docker.ContainerStat](300),
 	}, nil)
 
-	go RunServer(client, certs, lis)
+	server := NewServer(client, certs, "test")
+	go server.Serve(lis)
 }
 
 func bufDialer(ctx context.Context, address string) (net.Conn, error) {
@@ -144,19 +144,15 @@ func TestFindContainer(t *testing.T) {
 	container, _ := rpc.FindContainer("123456")
 
 	assert.Equal(t, container, docker.Container{
-		ID:        "123456",
-		Name:      "test",
-		Host:      "localhost",
-		Image:     "test",
-		ImageID:   "test",
-		StartedAt: &time.Time{},
-		State:     "running",
-		Status:    "running",
-		Health:    "healthy",
-		Group:     "test",
-		Command:   "test",
-		Created:   time.Time{},
-		Tty:       true,
+		ID:      "123456",
+		Name:    "test",
+		Host:    "localhost",
+		Image:   "test",
+		State:   "running",
+		Health:  "healthy",
+		Group:   "test",
+		Command: "test",
+		Tty:     true,
 		Labels: map[string]string{
 			"test": "test",
 		},
@@ -174,19 +170,15 @@ func TestListContainers(t *testing.T) {
 
 	assert.Equal(t, containers, []docker.Container{
 		{
-			ID:        "123456",
-			Name:      "test",
-			Host:      "localhost",
-			Image:     "test",
-			ImageID:   "test",
-			StartedAt: &time.Time{},
-			State:     "running",
-			Status:    "running",
-			Health:    "healthy",
-			Group:     "test",
-			Command:   "test",
-			Created:   time.Time{},
-			Tty:       true,
+			ID:      "123456",
+			Name:    "test",
+			Host:    "localhost",
+			Image:   "test",
+			State:   "running",
+			Health:  "healthy",
+			Group:   "test",
+			Command: "test",
+			Tty:     true,
 			Labels: map[string]string{
 				"test": "test",
 			},
